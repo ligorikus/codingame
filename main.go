@@ -2,9 +2,18 @@ package main
 
 import (
 	"fmt"
+	"os"
 )
 
 type Owner int64
+
+type GameInput struct {
+	owner Owner
+	arg2  int
+	arg3  int
+	arg4  int
+	arg5  int
+}
 
 const (
 	Player  Owner = 1
@@ -26,23 +35,23 @@ type Node struct {
 	owner      Owner
 	garrison   int
 	production int
+	incoming   []TroopSquad
 }
 
 type TroopSquad struct {
 	owner       Owner
-	source      Node
-	destination Node
+	source      int
+	destination int
 	size        int
 	arrival     int
 }
 
 type GameState struct {
-	graph  Graph
-	nodes  []Node
-	troops []TroopSquad
+	graph Graph
+	nodes []Node
 }
 
-func Initialize() Graph {
+func (state *GameState) InitializeGraph() {
 	// factoryCount: the number of factories
 	var factoryCount int
 	fmt.Scan(&factoryCount)
@@ -51,25 +60,29 @@ func Initialize() Graph {
 	var linkCount int
 	fmt.Scan(&linkCount)
 
-	graph := make(Graph, factoryCount)
-	for i := range graph {
-		graph[i] = make([]int, factoryCount)
+	state.graph = make(Graph, factoryCount)
+	for i := range state.graph {
+		state.graph[i] = make([]int, factoryCount)
 	}
 
 	for i := 0; i < linkCount; i++ {
 		var factory1, factory2, distance int
 		fmt.Scan(&factory1, &factory2, &distance)
-		graph[factory1][factory2] = distance
-		graph[factory2][factory1] = distance
+		state.graph[factory1][factory2] = distance
+		state.graph[factory2][factory1] = distance
 	}
-	return graph
+}
+
+func (state *GameState) InitializeNodes() {
+	state.nodes = make([]Node, len(state.graph))
+	for i := range state.graph {
+		state.nodes[i] = Node{id: i}
+	}
 }
 
 func (state *GameState) UpdateState() {
 	var entityCount int
 	fmt.Scan(&entityCount)
-	state.nodes = state.nodes[:0]
-	state.troops = state.troops[:0]
 
 	for i := 0; i < entityCount; i++ {
 		var entityId int
@@ -77,27 +90,45 @@ func (state *GameState) UpdateState() {
 		var owner Owner
 		var arg2, arg3, arg4, arg5 int
 		fmt.Scan(&entityId, &entityType, &owner, &arg2, &arg3, &arg4, &arg5)
+		input := GameInput{owner: owner, arg2: arg2, arg3: arg3, arg4: arg4, arg5: arg5}
 
 		switch entityType {
 		case Factory:
-			node := Node{id: entityId, owner: owner, garrison: arg2, production: arg3}
-			state.nodes = append(state.nodes, node)
+			state.UpdateNode(entityId, input)
 		case Troop:
-			troop := TroopSquad{owner: owner, source: state.nodes[arg2], destination: state.nodes[arg3], size: arg4, arrival: arg5}
-			state.troops = append(state.troops, troop)
+			state.InputTroop(input)
 		}
 	}
 }
 
-func main() {
-	graph := Initialize()
+func (state *GameState) UpdateNode(nodeId int, input GameInput) {
+	node := &state.nodes[nodeId]
+	node.owner = input.owner
+	node.garrison = input.arg2
+	node.production = input.arg3
+	node.incoming = make([]TroopSquad, 0)
+}
 
-	var nodes []Node
-	var troops []TroopSquad
-	state := GameState{graph: graph, nodes: nodes, troops: troops}
+func (state *GameState) InputTroop(input GameInput) {
+	troop := TroopSquad{}
+	troop.owner = input.owner
+	troop.source = input.arg2
+	troop.destination = input.arg3
+	troop.size = input.arg4
+	troop.arrival = input.arg5
+
+	nodeIncoming := state.nodes[troop.destination].incoming
+	state.nodes[troop.destination].incoming = append(nodeIncoming, troop)
+}
+
+func main() {
+	state := GameState{}
+	state.InitializeGraph()
+	state.InitializeNodes()
 
 	for {
 		state.UpdateState()
+		fmt.Fprintln(os.Stderr, state.nodes[8].incoming)
 		// Any valid action, such as "WAIT" or "MOVE source destination cyborgs"
 		fmt.Println("WAIT")
 	}
