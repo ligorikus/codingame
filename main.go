@@ -27,7 +27,7 @@ const (
 
 type EntityType string
 
-type Graph1 [][]int
+type Graph [][]int
 
 const (
 	Factory EntityType = "FACTORY"
@@ -126,12 +126,18 @@ func (state *GameState) InputTroop(input GameInput) {
 }
 
 func (state *GameState) PrintGraphMatrix() {
+	fmt.Fprintln(os.Stderr, "{")
 	for _, graph := range state.graph {
-		fmt.Fprintln(os.Stderr, graph)
+		fmt.Fprint(os.Stderr, "{")
+		for _, graphItem := range graph {
+			fmt.Fprint(os.Stderr, graphItem, ",")
+		}
+		fmt.Fprintln(os.Stderr, "},")
 	}
+	fmt.Fprintln(os.Stderr, "}")
 }
 
-func main2() {
+func main1() {
 	state := GameState{}
 	state.InitializeGraph()
 

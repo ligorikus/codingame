@@ -1,139 +1,128 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
-type Graph [][]int
+type Graph1 [][]int
 
-type Path struct {
-	path     []int
-	cost     int
-	startKey int
-	endKey   int
-	length   int
-}
+const MaxDistanceNum = 64
 
-func MinKey(min int, arr []int) int {
+func MinKeyValue(arr []int, exclude []bool) (int, int) {
+	min := MaxDistanceNum
 	minKey := -1
-	for i := 0; i < len(arr); i++ {
-		if arr[i] < min {
-			minKey = i
-			min = arr[i]
-		}
-	}
-	return minKey
-}
-
-func RelationWithMinCost(graph Graph, path Path) Path {
-	result := make([]int, len(graph))
-	resultPath := make([]Path, len(graph))
-	for i := 0; i < len(result); i++ {
-		result[i] = 1000
-	}
-	for node := 0; node < len(graph); node++ {
-		continueFlag := false
-		for j := 0; j < path.length; j++ {
-			if node == path.path[j] {
-				continueFlag = true
-				break
-			}
-		}
-
-		if continueFlag {
+	for i, item := range arr {
+		if exclude[i] {
 			continue
 		}
-		calcPath := Path{}
-		calcPath.path = make([]int, len(graph))
-		calcPath.length = path.length
-		calcPath.startKey = path.startKey
-		calcPath.endKey = path.endKey
-		copy(calcPath.path, path.path)
-
-		rightSidePath := make([]int, len(graph))
-		copy(rightSidePath, calcPath.path[calcPath.endKey:])
-		calcPath.path[calcPath.endKey] = node
-		for i := 0; i < len(rightSidePath); i++ {
-			if rightSidePath[i] == -1 {
-				break
-			}
-			calcPath.path[calcPath.endKey+i+1] = rightSidePath[i]
-		}
-
-		calcPath.length++
-
-		calcPath.cost = GetCostPath(graph, calcPath)
-		if calcPath.cost < path.cost {
-			result[node] = calcPath.cost
-			resultPath[node] = calcPath
+		if item < min {
+			minKey = i
+			min = item
 		}
 	}
-	minKey := MinKey(path.cost, result)
-
-	if minKey != -1 {
-		leftPath := Path{}
-		leftPath.path = make([]int, len(graph))
-		leftPath.length = resultPath[minKey].length
-		leftPath.cost = resultPath[minKey].cost
-		leftPath.startKey = resultPath[minKey].startKey
-		leftPath.endKey = resultPath[minKey].startKey + 1
-		copy(leftPath.path, resultPath[minKey].path)
-		path = RelationWithMinCost(graph, leftPath)
-
-		rightPath := Path{}
-		rightPath.path = make([]int, len(graph))
-		rightPath.length = resultPath[minKey].length
-		rightPath.startKey = resultPath[minKey].cost
-		rightPath.startKey = resultPath[minKey].endKey
-		rightPath.endKey = resultPath[minKey].endKey + 1
-		copy(rightPath.path, resultPath[minKey].path)
-		path = RelationWithMinCost(graph, rightPath)
-	}
-	return path
+	return minKey, min
 }
 
-func GetCostPath(graph Graph, path Path) int {
-	cost := 0
-	for i := 1; i < path.length; i++ {
-		cost += graph[path.path[i-1]][path.path[i]]
+func Dijkstra(graph Graph1, movementTable [][]int, startNode int) [][]int {
+	var dijkstraTable, dijkstraTableUtil [][]int
+	dijkstraTable = make([][]int, len(graph))
+	dijkstraTableUtil = make([][]int, len(graph))
+	visited := make([]bool, len(graph))
+
+	for i := 0; i < len(graph); i++ {
+		dijkstraTable[i] = make([]int, len(graph))
+		dijkstraTableUtil[i] = make([]int, len(graph))
+		for j := 0; j < len(movementTable); j++ {
+			dijkstraTable[i][j] = MaxDistanceNum
+			dijkstraTableUtil[i][j] = -1
+		}
 	}
-	return cost
+	dijkstraTable[0][startNode] = 0
+	dijkstraTableUtil[0][startNode] = startNode
+
+	for i := 1; i < len(dijkstraTable); i++ {
+		key, cost := MinKeyValue(dijkstraTable[i-1], visited)
+		if key == -1 {
+			break
+		}
+
+		visited[key] = true
+		for j := 0; j < len(dijkstraTable[i]); j++ {
+			if visited[j] {
+				dijkstraTable[i][j] = dijkstraTable[i-1][j]
+				dijkstraTableUtil[i][j] = dijkstraTableUtil[i-1][j]
+				continue
+			}
+
+			oldCost := dijkstraTable[i-1][j]
+			newCost := cost + graph[key][j]
+			if newCost < oldCost {
+				dijkstraTable[i][j] = newCost
+				dijkstraTableUtil[i][j] = key
+			} else {
+				dijkstraTable[i][j] = oldCost
+				dijkstraTableUtil[i][j] = dijkstraTableUtil[i-1][j]
+			}
+		}
+	}
+
+	for i, item := range dijkstraTableUtil[len(graph)-1] {
+		if i == item {
+			continue
+		}
+		movementTable[i][item] = item
+		movementTable[item][i] = i
+
+		var inversedI, inversedItem int
+		if i != 0 {
+			if i%2 == 0 {
+				inversedI = i - 1
+			} else {
+				inversedI = i + 1
+			}
+		}
+		if item != 0 {
+			if item%2 == 0 {
+				inversedItem = i - 1
+			} else {
+				inversedItem = i + 1
+			}
+		}
+
+		if inversedI == inversedItem {
+			continue
+		}
+		movementTable[inversedI][inversedItem] = item
+		movementTable[inversedItem][inversedI] = i
+	}
+
+	return movementTable
 }
 
 func main() {
-	graph := Graph{
-		{0, 3, 3, 3, 3, 7, 7, 2, 2, 6, 6, 1, 1, 8, 8},
-		{3, 0, 7, 2, 7, 6, 9, 5, 2, 4, 9, 1, 5, 8, 9},
-		{3, 7, 0, 7, 2, 9, 6, 2, 5, 9, 4, 5, 1, 9, 8},
-		{3, 2, 7, 0, 8, 3, 11, 4, 5, 1, 10, 1, 5, 5, 11},
-		{3, 7, 2, 8, 0, 11, 3, 5, 4, 10, 1, 5, 1, 11, 5},
-		{7, 6, 9, 3, 11, 0, 15, 5, 9, 2, 14, 5, 9, 1, 15},
-		{7, 9, 6, 11, 3, 15, 0, 9, 5, 14, 2, 9, 5, 15, 1},
-		{2, 5, 2, 4, 5, 5, 9, 0, 5, 6, 7, 2, 3, 5, 10},
-		{2, 2, 5, 5, 4, 9, 5, 5, 0, 7, 6, 3, 2, 10, 5},
-		{6, 4, 9, 1, 10, 2, 14, 6, 7, 0, 13, 3, 8, 4, 14},
-		{6, 9, 4, 10, 1, 14, 2, 7, 6, 13, 0, 8, 3, 14, 4},
-		{1, 1, 5, 1, 5, 5, 9, 2, 3, 3, 8, 0, 3, 6, 9},
-		{1, 5, 1, 5, 1, 9, 5, 3, 2, 8, 3, 3, 0, 9, 6},
-		{8, 8, 9, 5, 11, 1, 15, 5, 10, 4, 14, 6, 9, 0, 17},
-		{8, 9, 8, 11, 5, 15, 1, 10, 5, 14, 4, 9, 6, 17, 0},
+	graph := Graph1{
+		{0, 6, 6, 3, 3, 5, 5, 1, 1},
+		{6, 0, 14, 2, 10, 1, 13, 4, 9},
+		{6, 14, 0, 10, 2, 13, 1, 9, 4},
+		{3, 2, 10, 0, 7, 2, 9, 1, 5},
+		{3, 10, 2, 7, 0, 9, 2, 5, 1},
+		{5, 1, 13, 2, 9, 0, 12, 2, 8},
+		{5, 13, 1, 9, 2, 12, 0, 8, 2},
+		{1, 4, 9, 1, 5, 2, 8, 0, 4},
+		{1, 9, 4, 5, 1, 8, 2, 4, 0},
 	}
 
-	pathArr := make([]int, len(graph))
-	for i := 2; i < len(pathArr); i++ {
-		pathArr[i] = -1
-	}
-	pathArr[0] = 9
-	pathArr[1] = 0
+	var movementTable [][]int
 
-	path := Path{
-		path:     pathArr,
-		cost:     graph[pathArr[0]][pathArr[1]],
-		startKey: 0,
-		endKey:   1,
-		length:   2,
+	movementTable = make([][]int, len(graph))
+	for i := 0; i < len(movementTable); i++ {
+		movementTable[i] = make([]int, len(graph))
+		for j := 0; j < len(movementTable); j++ {
+			movementTable[i][j] = -1
+		}
 	}
 
-	result := RelationWithMinCost(graph, path)
-	fmt.Println(result.path[:result.length])
+	movementTable = Dijkstra(graph, movementTable, 1)
+
+	for _, item := range movementTable {
+		fmt.Println(item)
+	}
 }
