@@ -2,13 +2,11 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"time"
 )
 
-const MaxDistance = 20
-const Deep = MaxDistance + 1
+const MaxDeep = 21
 
 type Owner int64
 
@@ -28,7 +26,8 @@ const (
 
 type EntityType string
 
-type Graph [][]int
+type Matrix [][]int
+type Graph Matrix
 
 const (
 	Factory EntityType = "FACTORY"
@@ -40,7 +39,7 @@ type Node struct {
 	owner      Owner
 	garrison   int
 	production int
-	incoming   [Deep][]TroopSquad
+	incoming   [MaxDeep][]TroopSquad
 	properties NodeProperties
 }
 
@@ -53,13 +52,15 @@ type TroopSquad struct {
 }
 
 type GameState struct {
-	graph Graph
-	nodes []*Node
+	graph      Graph
+	nodes      []*Node
+	costMatrix Matrix
+	moveMatrix Matrix
 }
 
 type NodeProperties struct {
-	balance [Deep]int
-	owner   [Deep]Owner
+	balance [MaxDeep]int
+	owner   [MaxDeep]Owner
 	cost    []int
 }
 
@@ -83,6 +84,10 @@ func (state *GameState) InitializeGraph() {
 		state.graph[factory1][factory2] = distance
 		state.graph[factory2][factory1] = distance
 	}
+
+	costMatrix, moveMatrix := InitMoveMatrix(state.graph)
+	state.costMatrix = costMatrix
+	state.moveMatrix = moveMatrix
 }
 
 func (state *GameState) InitializeNodes() {
@@ -118,7 +123,7 @@ func (state *GameState) UpdateNode(nodeId int, input GameInput) {
 	node.owner = input.owner
 	node.garrison = input.arg2
 	node.production = input.arg3
-	node.incoming = [Deep][]TroopSquad{}
+	node.incoming = [MaxDeep][]TroopSquad{}
 }
 
 func (state *GameState) InputTroop(input GameInput) {
@@ -133,113 +138,115 @@ func (state *GameState) InputTroop(input GameInput) {
 	state.nodes[troop.destination].incoming[troop.arrival] = append(nodeIncoming, troop)
 }
 
-func (node *Node) CalculateBalance() {
-	node.properties.balance[0] = node.garrison
-	node.properties.owner[0] = node.owner
+func Dijkstra(graph Graph, startNode int) ([]int, []int) {
+	u := make([]bool, len(graph))
+	d := make([]int, len(graph))
+	p := make([]int, len(graph))
+	for i := 0; i < len(d); i++ {
+		d[i] = MaxDeep
+	}
+	d[startNode] = 0
 
-	for i := 1; i < Deep; i++ {
-		node.properties.owner[i] = node.properties.owner[i-1]
-		node.properties.balance[i] = node.properties.balance[i-1]
-
-		if node.properties.owner[i] != Neutral {
-			node.properties.balance[i] = node.properties.balance[i-1] + node.production
+	for i := 0; i < len(graph); i++ {
+		v := -1
+		for j := 0; j < len(graph); j++ {
+			if !u[j] && (v == -1 || d[j] < d[v]) {
+				v = j
+			}
 		}
 
-		incomingBalance := 0
-		var incomingWinner Owner
-		for _, troop := range node.incoming[i] {
-			incomingBalance += troop.size * int(troop.owner)
+		if d[v] == MaxDeep {
+			break
 		}
-		if incomingBalance != 0 {
-			if incomingBalance > 0 {
-				incomingWinner = Player
-			} else {
-				incomingWinner = Enemy
-				incomingBalance *= -1
-			}
 
-			if node.properties.owner[i] == incomingWinner {
-				node.properties.balance[i] += incomingBalance
-			} else {
-				node.properties.balance[i] -= incomingBalance
-			}
+		u[v] = true
 
-			if node.properties.balance[i] < 0 {
-				node.properties.balance[i] *= -1
-				node.properties.owner[i] = incomingWinner
+		for j := 0; j < len(graph[v]); j++ {
+			to := j
+			len := graph[v][j]
+			if d[v]+len < d[to] {
+				d[to] = d[v] + len
+				p[to] = v
 			}
 		}
 	}
+
+	return d, p
 }
 
-func (node *Node) CalculateCost(state GameState) {
-	if node.owner != Player {
-		return
+func RestoreDijkstra(length int, startNode int, finishNode int, p []int) []int {
+	path := make([]int, length)
+	for v := finishNode; v != startNode; v = p[v] {
+		path = append(path, v)
 	}
-	directions := state.graph[node.id]
-	for i := 0; i < len(directions); i++ {
-		if i == node.id {
-			continue
-		}
+	path = append(path, startNode)
 
-		currentNode := state.nodes[i]
-		troopSize := currentNode.properties.balance[directions[i]]
+	rev_slc := []int{}
+	for i := range path {
+		rev_slc = append(rev_slc, path[len(path)-1-i])
+	}
 
-		var payback float64
-		if currentNode.production != 0 {
-			payback = float64(troopSize) / float64(currentNode.production)
-			node.properties.cost[i] = int(math.Ceil(payback)) + directions[i]
-		} else {
-			node.properties.cost[i] = 200
+	j := 0
+	for i := range rev_slc {
+		j++
+		if rev_slc[i] == finishNode {
+			break
 		}
 	}
+	return rev_slc[:j]
 }
 
-func (node *Node) SearchCheap() int {
-	min := 999
-	minCostNode := 0
-	for i := 0; i < len(node.properties.cost); i++ {
-		if i == node.id {
-			continue
-		}
-		if node.properties.cost[i] < min {
-			minCostNode = i
-			min = node.properties.cost[i]
+func UpdateMoveMatrix(moveMatrix [][]int, restored []int) [][]int {
+	target := restored[len(restored)-1]
+	for i := 0; i < len(restored)-1; i++ {
+		moveMatrix[restored[i]][target] = restored[i+1]
+	}
+	return moveMatrix
+}
+
+func InitMoveMatrix(graph Graph) ([][]int, [][]int) {
+	length := len(graph)
+
+	moveMatrix := make([][]int, length)
+	costMatrix := make([][]int, length)
+	for i := 0; i < length; i++ {
+		moveMatrix[i] = make([]int, length)
+		costMatrix[i] = make([]int, length)
+		for j := 0; j < length; j++ {
+			moveMatrix[i][j] = -1
 		}
 	}
-	return minCostNode
+
+	for i := 0; i < length; i++ {
+		cost, path := Dijkstra(graph, i)
+		costMatrix[i] = cost
+		for j := 0; j < length; j++ {
+			if i != j {
+				restored := RestoreDijkstra(length, i, j, path)
+				moveMatrix = UpdateMoveMatrix(moveMatrix, restored)
+			}
+		}
+	}
+	return costMatrix, moveMatrix
 }
 
 func main() {
+	start := time.Now()
 	state := GameState{}
 	state.InitializeGraph()
 	state.InitializeNodes()
 
+	for _, item := range state.graph {
+		fmt.Fprintln(os.Stderr, item)
+	}
+
+	duration := time.Since(start)
+	fmt.Fprintln(os.Stderr, duration)
+
 	for {
-		start := time.Now()
 		state.UpdateState()
 
-		for _, node := range state.nodes {
-			node.CalculateBalance()
-		}
-		for _, node := range state.nodes {
-			node.CalculateCost(state)
-		}
-
-		fmt.Print("WAIT")
-		for _, node := range state.nodes {
-			if node.owner == Player {
-				fmt.Print(";")
-				targetNodeId := node.SearchCheap()
-				distance := state.graph[node.id][targetNodeId]
-				size := state.nodes[targetNodeId].properties.balance[distance] + 1
-				fmt.Print("MOVE ", node.id, targetNodeId, size)
-			}
-		}
-		fmt.Println()
+		fmt.Println("WAIT")
 		// Any valid action, such as "WAIT" or "MOVE source destination cyborgs"
-
-		duration := time.Since(start)
-		fmt.Fprintln(os.Stderr, duration)
 	}
 }
