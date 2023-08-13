@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
+	"sort"
 )
 
 const MaxDeep = 21
@@ -11,39 +11,40 @@ const MaxDeep = 21
 type Owner int64
 
 type GameInput struct {
-	owner Owner
-	arg2  int
-	arg3  int
-	arg4  int
-	arg5  int
+	owner    Owner
+	entityId int
+	arg2     int
+	arg3     int
+	arg4     int
+	arg5     int
 }
 
 const (
 	Player  Owner = 1
-	Enemy         = -1
-	Neutral       = 0
+	Enemy   Owner = -1
+	Neutral Owner = 0
 )
 
 type EntityType string
 
 type Matrix [][]int
-type Graph Matrix
 
 const (
-	Factory EntityType = "FACTORY"
-	Troop   EntityType = "TROOP"
+	FactoryEntity EntityType = "FACTORY"
+	TroopEntity   EntityType = "TROOP"
+	BombEntity    EntityType = "BOMB"
 )
 
-type Node struct {
-	id         int
-	owner      Owner
-	garrison   int
-	production int
-	incoming   [MaxDeep][]TroopSquad
-	properties NodeProperties
+type Factory struct {
+	id                    int
+	owner                 Owner
+	garrison              int
+	production            int
+	turnsToStartProducing int
 }
 
-type TroopSquad struct {
+type Troop struct {
+	id          int
 	owner       Owner
 	source      int
 	destination int
@@ -51,17 +52,73 @@ type TroopSquad struct {
 	arrival     int
 }
 
-type GameState struct {
-	graph      Graph
-	nodes      []*Node
-	costMatrix Matrix
-	moveMatrix Matrix
+type Bomb struct {
+	id          int
+	owner       Owner
+	source      int
+	destination int
+	arrival     int
 }
 
-type NodeProperties struct {
-	balance [MaxDeep]int
-	owner   [MaxDeep]Owner
-	cost    []int
+type FactoryOwner struct {
+	player  []int
+	neutral []int
+	enemy   []int
+}
+
+type ScenarioType string
+
+const (
+	MoveScenario ScenarioType = "MOVE"
+	BombScenario ScenarioType = "BOMB"
+	IncScenario  ScenarioType = "INC"
+)
+
+type Scenario struct {
+	scenarioType ScenarioType
+	source       int
+	destination  int
+	size         int
+}
+
+type PlayerState struct {
+	scriptList      []Scenario
+	availableTroops AvailableTroops
+	enemyTroops     AvailableTroops
+}
+
+type GameState struct {
+	graph      Matrix
+	costMatrix Matrix
+	moveMatrix Matrix
+	factories  map[int]Factory
+	troops     map[int]Troop
+	bombs      map[int]Bomb
+
+	factoryOwner FactoryOwner
+	playerState  PlayerState
+}
+
+type FactoryAttackCost struct {
+	source      int
+	destination int
+	cost        int
+}
+
+type FactoryAttackCostList []FactoryAttackCost
+
+type AvailableTroops map[int]int
+
+func (facl FactoryAttackCostList) Len() int {
+	return len(facl)
+}
+
+func (facl FactoryAttackCostList) Less(i, j int) bool {
+	return facl[i].cost < facl[j].cost
+}
+
+func (facl FactoryAttackCostList) Swap(i, j int) {
+	facl[i], facl[j] = facl[j], facl[i]
 }
 
 func (state *GameState) InitializeGraph() {
@@ -73,7 +130,7 @@ func (state *GameState) InitializeGraph() {
 	var linkCount int
 	fmt.Scan(&linkCount)
 
-	state.graph = make(Graph, factoryCount)
+	state.graph = make(Matrix, factoryCount)
 	for i := range state.graph {
 		state.graph[i] = make([]int, factoryCount)
 	}
@@ -85,19 +142,29 @@ func (state *GameState) InitializeGraph() {
 		state.graph[factory2][factory1] = distance
 	}
 
-	costMatrix, moveMatrix := InitMoveMatrix(state.graph)
-	state.costMatrix = costMatrix
-	state.moveMatrix = moveMatrix
+	state.FloydWarshallWithPathReconstruction()
 }
 
-func (state *GameState) InitializeNodes() {
-	state.nodes = make([]*Node, len(state.graph))
-	for i := range state.graph {
-		state.nodes[i] = &Node{id: i, properties: NodeProperties{cost: make([]int, len(state.graph))}}
-	}
+func (state *GameState) ClearState() {
+	state.factories = map[int]Factory{}
+	state.troops = map[int]Troop{}
+	state.bombs = map[int]Bomb{}
+
+	state.playerState.scriptList = make([]Scenario, 0)
+	state.playerState.availableTroops = map[int]int{}
+	state.playerState.enemyTroops = map[int]int{}
+
+	state.ClearOwner()
+}
+func (state *GameState) ClearOwner() {
+	state.factoryOwner.player = make([]int, 0)
+	state.factoryOwner.neutral = make([]int, 0)
+	state.factoryOwner.enemy = make([]int, 0)
 }
 
 func (state *GameState) UpdateState() {
+	state.ClearState()
+
 	var entityCount int
 	fmt.Scan(&entityCount)
 
@@ -107,146 +174,236 @@ func (state *GameState) UpdateState() {
 		var owner Owner
 		var arg2, arg3, arg4, arg5 int
 		fmt.Scan(&entityId, &entityType, &owner, &arg2, &arg3, &arg4, &arg5)
-		input := GameInput{owner: owner, arg2: arg2, arg3: arg3, arg4: arg4, arg5: arg5}
+		input := GameInput{entityId: entityId, owner: owner, arg2: arg2, arg3: arg3, arg4: arg4, arg5: arg5}
 
 		switch entityType {
-		case Factory:
-			state.UpdateNode(entityId, input)
-		case Troop:
+		case FactoryEntity:
+			state.InputFactory(input)
+			break
+		case TroopEntity:
 			state.InputTroop(input)
+			break
+		case BombEntity:
+			state.InputBomb(input)
+			break
 		}
 	}
 }
 
-func (state *GameState) UpdateNode(nodeId int, input GameInput) {
-	node := state.nodes[nodeId]
-	node.owner = input.owner
-	node.garrison = input.arg2
-	node.production = input.arg3
-	node.incoming = [MaxDeep][]TroopSquad{}
+func (state *GameState) InputFactory(input GameInput) {
+	state.factories[input.entityId] = Factory{
+		id:                    input.entityId,
+		owner:                 input.owner,
+		garrison:              input.arg2,
+		production:            input.arg3,
+		turnsToStartProducing: input.arg4,
+	}
+
+	if input.owner == Player {
+		state.factoryOwner.player = append(state.factoryOwner.player, input.entityId)
+		state.playerState.availableTroops[input.entityId] = input.arg2
+	}
+
+	if input.owner == Neutral {
+		state.factoryOwner.neutral = append(state.factoryOwner.neutral, input.entityId)
+		state.playerState.enemyTroops[input.entityId] = input.arg2
+	}
+
+	if input.owner == Enemy {
+		state.factoryOwner.enemy = append(state.factoryOwner.enemy, input.entityId)
+		state.playerState.enemyTroops[input.entityId] = input.arg2
+	}
 }
 
 func (state *GameState) InputTroop(input GameInput) {
-	troop := TroopSquad{}
-	troop.owner = input.owner
-	troop.source = input.arg2
-	troop.destination = input.arg3
-	troop.size = input.arg4
-	troop.arrival = input.arg5
-
-	nodeIncoming := state.nodes[troop.destination].incoming[troop.arrival]
-	state.nodes[troop.destination].incoming[troop.arrival] = append(nodeIncoming, troop)
+	state.troops[input.entityId] = Troop{
+		id:          input.entityId,
+		owner:       input.owner,
+		source:      input.arg2,
+		destination: input.arg3,
+		size:        input.arg4,
+		arrival:     input.arg5,
+	}
 }
 
-func Dijkstra(graph Graph, startNode int) ([]int, []int) {
-	u := make([]bool, len(graph))
-	d := make([]int, len(graph))
-	p := make([]int, len(graph))
-	for i := 0; i < len(d); i++ {
-		d[i] = MaxDeep
+func (state *GameState) InputBomb(input GameInput) {
+	state.bombs[input.entityId] = Bomb{
+		id:          input.entityId,
+		owner:       input.owner,
+		source:      input.arg2,
+		destination: input.arg3,
+		arrival:     input.arg4,
 	}
-	d[startNode] = 0
+}
 
+func (state *GameState) FloydWarshallWithPathReconstruction() {
+	graph := state.graph
+	dist := make([][]int, len(graph))
+	next := make([][]int, len(graph))
 	for i := 0; i < len(graph); i++ {
-		v := -1
+		dist[i] = make([]int, len(graph))
+		next[i] = make([]int, len(graph))
 		for j := 0; j < len(graph); j++ {
-			if !u[j] && (v == -1 || d[j] < d[v]) {
-				v = j
+			if i == j {
+				dist[i][j] = 0
+				next[i][j] = -1
+			} else {
+				dist[i][j] = graph[i][j]
+				next[i][j] = j
+			}
+
+		}
+	}
+
+	for k := 0; k < len(graph); k++ {
+		for i := 0; i < len(graph); i++ {
+			for j := 0; j < len(graph); j++ {
+				if dist[i][j] > dist[i][k]+dist[k][j] {
+					dist[i][j] = dist[i][k] + dist[k][j]
+					next[i][j] = next[i][k]
+				}
 			}
 		}
+	}
 
-		if d[v] == MaxDeep {
+	state.costMatrix = dist
+	state.moveMatrix = next
+}
+
+func (state *GameState) CalcMinDistanceByPlayer(playerFactories []int) []int {
+	playerMinDistance := make([]int, len(state.factories))
+	for i := range state.factories {
+		playerMinDistance[i] = 21
+	}
+
+	for _, id := range playerFactories {
+		for i, cost := range state.costMatrix[id] {
+			if cost < playerMinDistance[i] {
+				playerMinDistance[i] = cost
+			}
+		}
+	}
+	return playerMinDistance
+}
+
+func (state *GameState) GetInfluenceZone() []Owner {
+	owner := make([]Owner, len(state.factories))
+	playerMinDistance := state.CalcMinDistanceByPlayer(state.factoryOwner.player)
+	enemyMinDistance := state.CalcMinDistanceByPlayer(state.factoryOwner.enemy)
+	for i, cost := range playerMinDistance {
+		if enemyMinDistance[i] > cost {
+			owner[i] = Player
+		} else if enemyMinDistance[i] < cost {
+			owner[i] = Enemy
+		} else {
+			owner[i] = Neutral
+		}
+	}
+	return owner
+}
+
+func GetInfluenceZoneByPlayer(influenceZone []Owner, player Owner) []int {
+	result := make([]int, 0)
+	for i, owner := range influenceZone {
+		if owner == player || owner == Neutral {
+			result = append(result, i)
+		}
+	}
+	return result
+}
+
+func (state *GameState) CostOfAttack(source int, destination int) FactoryAttackCost {
+	if state.factories[destination].production == 0 {
+		return FactoryAttackCost{
+			source:      source,
+			destination: destination,
+			cost:        255,
+		}
+	}
+	cost := 0
+	cost += state.costMatrix[source][destination]
+	cost += (state.factories[destination].garrison / state.factories[destination].production) + 1
+
+	return FactoryAttackCost{
+		source:      source,
+		destination: destination,
+		cost:        cost,
+	}
+}
+
+func (state *GameState) ProcessAttack() {
+	influenceZone := state.GetInfluenceZone()
+	playerInfluenceZone := GetInfluenceZoneByPlayer(influenceZone, Player)
+
+	scenarioList := make(FactoryAttackCostList, 0)
+	for _, playerFactory := range state.factoryOwner.player {
+		for _, influenceFactory := range playerInfluenceZone {
+			if state.factories[influenceFactory].owner == Player {
+				continue
+			}
+			scenarioList = append(scenarioList, state.CostOfAttack(playerFactory, influenceFactory))
+		}
+	}
+	sort.Sort(scenarioList)
+	for _, scenario := range scenarioList {
+
+		availableTroops := state.playerState.availableTroops[scenario.source]
+		if availableTroops == 0 {
+			continue
+		}
+		enemyTroops := state.playerState.enemyTroops[scenario.destination]
+		delta := availableTroops - (enemyTroops + 1)
+
+		var scenarioSize int
+		if delta >= 0 {
+			scenarioSize = (enemyTroops + 1)
+			availableTroops -= (enemyTroops + 1)
+			enemyTroops = 0
+		} else {
+			scenarioSize = availableTroops
+			enemyTroops -= availableTroops
+			availableTroops = 0
+		}
+
+		state.playerState.scriptList = append(state.playerState.scriptList, Scenario{
+			scenarioType: MoveScenario,
+			source:       scenario.source,
+			destination:  scenario.destination,
+			size:         scenarioSize,
+		})
+	}
+}
+
+func (state *GameState) ProcessScenario() {
+	for _, scenario := range state.playerState.scriptList {
+		switch scenario.scenarioType {
+		case MoveScenario:
+			fmt.Print("MOVE ", scenario.source, " ", scenario.destination, " ", scenario.size, ";")
 			break
 		}
-
-		u[v] = true
-
-		for j := 0; j < len(graph[v]); j++ {
-			to := j
-			len := graph[v][j]
-			if d[v]+len < d[to] {
-				d[to] = d[v] + len
-				p[to] = v
-			}
-		}
 	}
-
-	return d, p
 }
 
-func RestoreDijkstra(length int, startNode int, finishNode int, p []int) []int {
-	path := make([]int, length)
-	for v := finishNode; v != startNode; v = p[v] {
-		path = append(path, v)
-	}
-	path = append(path, startNode)
-
-	rev_slc := []int{}
-	for i := range path {
-		rev_slc = append(rev_slc, path[len(path)-1-i])
-	}
-
-	j := 0
-	for i := range rev_slc {
-		j++
-		if rev_slc[i] == finishNode {
-			break
-		}
-	}
-	return rev_slc[:j]
-}
-
-func UpdateMoveMatrix(moveMatrix [][]int, restored []int) [][]int {
-	target := restored[len(restored)-1]
-	for i := 0; i < len(restored)-1; i++ {
-		moveMatrix[restored[i]][target] = restored[i+1]
-	}
-	return moveMatrix
-}
-
-func InitMoveMatrix(graph Graph) ([][]int, [][]int) {
-	length := len(graph)
-
-	moveMatrix := make([][]int, length)
-	costMatrix := make([][]int, length)
-	for i := 0; i < length; i++ {
-		moveMatrix[i] = make([]int, length)
-		costMatrix[i] = make([]int, length)
-		for j := 0; j < length; j++ {
-			moveMatrix[i][j] = -1
-		}
-	}
-
-	for i := 0; i < length; i++ {
-		cost, path := Dijkstra(graph, i)
-		costMatrix[i] = cost
-		for j := 0; j < length; j++ {
-			if i != j {
-				restored := RestoreDijkstra(length, i, j, path)
-				moveMatrix = UpdateMoveMatrix(moveMatrix, restored)
-			}
-		}
-	}
-	return costMatrix, moveMatrix
+func (state *GameState) Process() {
+	state.ProcessAttack()
+	state.ProcessScenario()
 }
 
 func main() {
-	start := time.Now()
 	state := GameState{}
 	state.InitializeGraph()
-	state.InitializeNodes()
 
-	for _, item := range state.graph {
+	for _, item := range state.moveMatrix {
 		fmt.Fprintln(os.Stderr, item)
 	}
-
-	duration := time.Since(start)
-	fmt.Fprintln(os.Stderr, duration)
-
+	fmt.Fprintln(os.Stderr)
+	for _, item := range state.costMatrix {
+		fmt.Fprintln(os.Stderr, item)
+	}
 	for {
 		state.UpdateState()
+		state.Process()
 
 		fmt.Println("WAIT")
-		// Any valid action, such as "WAIT" or "MOVE source destination cyborgs"
 	}
 }
